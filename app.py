@@ -30,11 +30,11 @@ EXCLUDE_FILTER_COLUMNS = [
 @st.cache_data
 def load_and_process_csv(file_path: str) -> pd.DataFrame:
     """
-    Load and preprocess the CSV file.
+    Load and preprocess the CSV file, returning a cleaned and reordered DataFrame.
     """
     data = pd.read_csv(file_path, low_memory=False)
 
-    # Convert Date Time to datetime, add 'Year' column
+    # Convert 'Date Time' to datetime and add 'Year' column if present
     if 'Date Time' in data.columns:
         data['Date Time'] = pd.to_datetime(
             data['Date Time'],
@@ -50,28 +50,29 @@ def load_and_process_csv(file_path: str) -> pd.DataFrame:
     # Clean up Subdivision if present
     if 'Subdivision' in data.columns:
         data['Subdivision'] = data['Subdivision'].str.replace(
-            r'^(Moose Jaw-|Saskatoon-)',
-            '',
-            regex=True
+            r'^(Moose Jaw-|Saskatoon-)', '', regex=True
         )
 
-    # Reorder columns
+    # Reorder columns (without creating too many copies)
     existing_columns = [col for col in DESIRED_ORDER if col in data.columns]
     other_columns = [col for col in data.columns if col not in existing_columns]
+    data = data[existing_columns + other_columns]
 
-    return data[existing_columns + other_columns]
+    return data
 
 
 def collect_user_filters(data: pd.DataFrame, exclude_columns: list) -> dict:
     """
     Create sidebar widgets for each column (except excluded),
     collect selected filter values, and return them in a dict.
+    Only show multiselect for columns with <= 200 unique values.
     """
     user_filters = {}
     for column in [col for col in data.columns if col not in exclude_columns]:
-        unique_values = sorted(data[column].dropna().unique())
-        # Only apply a sidebar filter if there are not too many unique values
+        unique_values = data[column].dropna().unique()
+        # Only apply a sidebar filter if the unique count is manageable
         if len(unique_values) <= 200:
+            unique_values = sorted(unique_values)
             selected_values = st.sidebar.multiselect(
                 f"Filter by {column}",
                 options=unique_values
@@ -85,12 +86,16 @@ def apply_filters(data: pd.DataFrame, user_filters: dict) -> pd.DataFrame:
     """
     Given the user-selected filters (from collect_user_filters),
     apply them to the DataFrame and return the filtered data.
+    Uses a single boolean mask for efficiency.
     """
-    filtered_data = data.copy()
+    if not user_filters:
+        return data
+
+    mask = pd.Series([True] * len(data), index=data.index)
     for column, selected_values in user_filters.items():
         if selected_values:  # Only filter if user selected any values
-            filtered_data = filtered_data[filtered_data[column].isin(selected_values)]
-    return filtered_data
+            mask &= data[column].isin(selected_values)
+    return data[mask]
 
 
 def create_map(filtered_data: pd.DataFrame,
@@ -99,7 +104,7 @@ def create_map(filtered_data: pd.DataFrame,
                manual_mp_input: float,
                recenter_map: bool):
     """
-    Create and render a Pydeck map with IconLayer (or other layers) for the filtered data.
+    Create and render a Pydeck map with various layer types for the filtered data.
     """
     fields_to_show = [
         'MP', 'Subdivision', 'Linecode', 'Year', 'Type', 'Sys',
@@ -113,11 +118,12 @@ def create_map(filtered_data: pd.DataFrame,
         "style": {"backgroundColor": "white", "border": "1px solid black"}
     }
 
-    if {'Latitude', 'Longitude', 'MP'}.issubset(filtered_data.columns) and len(filtered_data) > 0:
+    # Ensure necessary columns and non-empty data
+    if {'Latitude', 'Longitude', 'MP'}.issubset(filtered_data.columns) and not filtered_data.empty:
+        # If recenter button is pressed, find the point closest to the user-provided MP
         if recenter_map:
-            # Compute distance from user input MP to find a center
-            filtered_data['Distance'] = (filtered_data['MP'] - manual_mp_input).abs()
-            closest_point = filtered_data.loc[filtered_data['Distance'].idxmin()]
+            filtered_data["Distance"] = (filtered_data["MP"] - manual_mp_input).abs()
+            closest_point = filtered_data.loc[filtered_data["Distance"].idxmin()]
             view_state = pdk.ViewState(
                 latitude=closest_point["Latitude"],
                 longitude=closest_point["Longitude"],
@@ -131,15 +137,6 @@ def create_map(filtered_data: pd.DataFrame,
                 zoom=12,
                 pitch=0
             )
-
-        # Example icon
-        ICON_URL = "https://upload.wikimedia.org/wikipedia/commons/6/64/Icone_Vermelho.svg"
-        filtered_data["icon_data"] = [{
-            "url": ICON_URL,
-            "width": 128,
-            "height": 128,
-            "anchorY": 128
-        } for _ in range(len(filtered_data))]
 
         # Create layers based on user-selected layer type
         if map_layer_type == "Scatterplot":
@@ -155,11 +152,13 @@ def create_map(filtered_data: pd.DataFrame,
                 get_fill_color=[255, 140, 0, 200]
             )
         elif map_layer_type == "3D Visualization":
+            # Use "Value" as the elevation if present; otherwise fallback to a constant
+            elevation_data = "Value" if "Value" in filtered_data.columns else 10
             layer = pdk.Layer(
                 "ColumnLayer",
                 data=filtered_data,
                 get_position=["Longitude", "Latitude"],
-                get_elevation="Value",
+                get_elevation=elevation_data,
                 elevation_scale=100,
                 radius=200,
                 get_fill_color=[0, 128, 255, 200],
@@ -184,7 +183,7 @@ def create_map(filtered_data: pd.DataFrame,
                 radiusPixels=60,
             )
         else:
-            # Fallback to Scatterplot if unrecognized
+            # Fallback to Scatterplot
             layer = pdk.Layer(
                 "ScatterplotLayer",
                 data=filtered_data,
@@ -206,18 +205,18 @@ def create_map(filtered_data: pd.DataFrame,
 
         st.pydeck_chart(deck_map)
     else:
-        st.warning("No valid 'Latitude' or 'Longitude' columns found in the dataset, or no data to map.")
+        st.warning("No valid 'Latitude'/'Longitude' columns found or filtered data is empty.")
 
 
 def main():
     st.set_page_config(page_title="Dynamic CSV Filter Dashboard", layout="wide")
 
-    # Load the predefined CSV file (cached)
+    # Load the CSV file (cached)
     data = load_and_process_csv("data.csv")
 
-    st.write("### Data Preview")
-    st.dataframe(data)
-    st.write(f"Data contains {data.shape[0]} rows and {data.shape[1]} columns.")
+    st.write("### Data Preview (first 500 rows)")
+    st.dataframe(data.head(500))  # Show a limited preview for performance
+    st.write(f"Full Dataset: {data.shape[0]} rows, {data.shape[1]} columns.")
 
     st.sidebar.title("Filters")
     manual_mp_input = st.sidebar.number_input(
@@ -236,15 +235,15 @@ def main():
         index=0
     )
 
-    # Collect user filter selections (not cached because it involves UI)
+    # Collect user filter selections
     user_filters = collect_user_filters(data, EXCLUDE_FILTER_COLUMNS)
 
-    # Apply filters in a cached function
+    # Apply filters (cached)
     filtered_data = apply_filters(data, user_filters)
 
-    st.write("### Filtered Data")
-    st.dataframe(filtered_data)
-    st.write(f"Filtered Data contains {filtered_data.shape[0]} rows and {filtered_data.shape[1]} columns.")
+    st.write("### Filtered Data (first 500 rows)")
+    st.dataframe(filtered_data.head(500))
+    st.write(f"Filtered Data: {filtered_data.shape[0]} rows, {filtered_data.shape[1]} columns.")
 
     # Create and display the map
     create_map(filtered_data, map_layer_type, map_style, manual_mp_input, recenter_map)
