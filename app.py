@@ -133,7 +133,9 @@ def main():
                     heat_data = map_data[['Latitude', 'Longitude']].values.tolist()
                     HeatMap(heat_data).add_to(m)
 
-                st_folium(m, width=700, height=500)
+                # Center map on the dashboard
+                with st.container():
+                    st_folium(m, width=1100, height=600)
             else:
                 st.warning("No valid data points to display.")
         else:
