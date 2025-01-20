@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from folium import Map, Marker
-from folium.plugins import HeatMap, MarkerCluster
+from folium.plugins import HeatMap, MarkerCluster, LocateControl
 from streamlit_folium import st_folium
 
 
@@ -58,7 +58,9 @@ def main():
     # Load data (cached and cleaned)
     data = load_and_clean_data()
 
-    # Sidebar filter section
+    # --- SIDEBAR ---
+
+    # 1) Filter section
     with st.sidebar.expander("Data Filter", expanded=True):
         exclude_filter_columns = [
             'ID', 'MP', 'MP Major', 'MP Minor', 'Date Time', 'Value',
@@ -77,7 +79,7 @@ def main():
         # Apply Filter Button
         apply_filters = st.button("Apply Filters")
 
-    # Map filter options
+    # 2) Map filter options
     with st.sidebar.expander("Map Filters", expanded=True):
         map_view_mode = st.radio(
             "Select Map View",
@@ -95,6 +97,22 @@ def main():
             list(basemap_options.keys()),
             index=0
         )
+
+    # 3) Live location tracking buttons
+    st.sidebar.markdown("---")
+    if "live_tracking" not in st.session_state:
+        st.session_state["live_tracking"] = False
+
+    col1, col2 = st.sidebar.columns([1, 1])
+    with col1:
+        if st.button("Start Live Tracking"):
+            st.session_state["live_tracking"] = True
+
+    with col2:
+        if st.button("Stop Live Tracking"):
+            st.session_state["live_tracking"] = False
+
+    # --- MAIN CONTENT ---
 
     # Apply filters only on button click
     if apply_filters:
@@ -114,7 +132,7 @@ def main():
             map_data = filtered_data[['Latitude', 'Longitude']].dropna()
 
             if not map_data.empty:
-                # Limit rows dynamically for performance
+                # Limit rows for performance
                 if len(map_data) > 5000:
                     st.warning("Too many points to display! Showing the top 5,000 rows.")
                     map_data = map_data.head(5000)
@@ -124,7 +142,7 @@ def main():
                 tile_style = basemap_options[basemap_choice]
                 m = Map(location=[avg_lat, avg_lon], zoom_start=6, tiles=tile_style)
 
-                # Scatter Plot vs Heatmap
+                # Plot data
                 if map_view_mode == "Scatter Plot (Markers)":
                     marker_cluster = MarkerCluster(disableClusteringAtZoom=13).add_to(m)
                     for _, row in map_data.iterrows():
@@ -133,9 +151,34 @@ def main():
                     heat_data = map_data[['Latitude', 'Longitude']].values.tolist()
                     HeatMap(heat_data).add_to(m)
 
-                # Center map on the dashboard
-                with st.container():
-                    st_folium(m, width=1100, height=600)
+                # ─────────────────────────────────────────────────────────────
+                # LIVE BROWSER GPS TRACKING:
+                # If user clicked "Start Live Tracking",
+                # add the LocateControl to request/show user location
+                # in the browser.
+                # ─────────────────────────────────────────────────────────────
+                if st.session_state["live_tracking"]:
+                    LocateControl(
+                        auto_start=True,
+                        keepCurrentZoomLevel=False,
+                        flyTo=True,  # fly to user location on detection
+                        drawCircle=True,
+                        locateOptions={
+                            'enableHighAccuracy': True,
+                            'setView': True,
+                            'watch': True,
+                            'maxZoom': 16
+                        }
+                    ).add_to(m)
+
+                # Show map in Streamlit
+                returned_map = st_folium(m, width=1100, height=600)
+
+                st.markdown(
+                    "**Note**: If you do not see your location on the map, make sure to allow location "
+                    "permissions in your browser and that you are running this app over HTTPS or localhost."
+                )
+
             else:
                 st.warning("No valid data points to display.")
         else:
