@@ -129,7 +129,27 @@ def main():
     # Map Visualization
     with st.expander("Map Visualization", expanded=True):
         if {'Latitude', 'Longitude'}.issubset(filtered_data.columns):
-            map_data = filtered_data[['Latitude', 'Longitude']].dropna()
+
+            # ----------------------------------------------
+            # Define which columns you want to show in tooltips
+            fields_to_show = [
+                'MP', 'Subdivision', 'Linecode', 'Year', 'Type',
+                'Sys', 'Value', 'Length', 'Severity', 'Speed'
+            ]
+            existing_tooltip_cols = [col for col in fields_to_show if col in filtered_data.columns]
+
+            # Build a tooltip template (HTML) from the existing columns
+            # E.g., "<b>MP:</b> {MP}<br><b>Subdivision:</b> {Subdivision}<br>"
+            tooltip_template = "".join([
+                f"<b>{col}:</b> {{{col}}}<br>"
+                for col in existing_tooltip_cols
+            ])
+            # ----------------------------------------------
+
+            # Make sure map_data contains the columns needed for tooltips,
+            # plus latitude/longitude
+            columns_for_map = ['Latitude', 'Longitude'] + existing_tooltip_cols
+            map_data = filtered_data[columns_for_map].dropna(subset=['Latitude', 'Longitude'])
 
             if not map_data.empty:
                 # Limit rows for performance
@@ -142,32 +162,38 @@ def main():
                 tile_style = basemap_options[basemap_choice]
                 m = Map(location=[avg_lat, avg_lon], zoom_start=6, tiles=tile_style)
 
-                # Plot data
                 if map_view_mode == "Scatter Plot (Markers)":
                     marker_cluster = MarkerCluster(disableClusteringAtZoom=13).add_to(m)
+
+                    # Create a marker for each row of map_data
                     for _, row in map_data.iterrows():
-                        Marker(location=[row['Latitude'], row['Longitude']]).add_to(marker_cluster)
+                        # Render the tooltip text by substituting row values into the template
+                        tooltip_text = tooltip_template.format(**row)
+                        Marker(
+                            location=[row['Latitude'], row['Longitude']],
+                            tooltip=tooltip_text
+                        ).add_to(marker_cluster)
+
                 else:  # Heatmap
                     heat_data = map_data[['Latitude', 'Longitude']].values.tolist()
                     HeatMap(heat_data).add_to(m)
 
                 # ─────────────────────────────────────────────────────────────
-                # LIVE BROWSER GPS TRACKING:
-                # If user clicked "Start Live Tracking",
-                # add the LocateControl to request/show user location
-                # in the browser.
+                # LIVE BROWSER GPS TRACKING (modified to avoid constant recentering):
                 # ─────────────────────────────────────────────────────────────
                 if st.session_state["live_tracking"]:
                     LocateControl(
                         auto_start=True,
-                        keepCurrentZoomLevel=False,
-                        flyTo=True,  # fly to user location on detection
+                        keepCurrentZoomLevel=True,  # Keep the user's chosen zoom
+                        flyTo=False,  # Do not recenter automatically
                         drawCircle=True,
                         locateOptions={
                             'enableHighAccuracy': True,
-                            'setView': True,
+                            'setView': False,  # Do not automatically move the map
                             'watch': True,
-                            'maxZoom': 16
+                            'maxZoom': 16,
+                            # Optional: only update every 60s (60000 ms)
+                            'maximumAge': 60000
                         }
                     ).add_to(m)
 
