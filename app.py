@@ -6,27 +6,14 @@ from streamlit_folium import st_folium
 
 
 @st.cache_data
-def load_csv() -> pd.DataFrame:
-    """Read and cache the local data.csv file."""
-    return pd.read_csv("data.csv", low_memory=False)
+def load_and_clean_data() -> pd.DataFrame:
+    """Read, clean, and cache the dataset."""
+    data = pd.read_csv("data.csv", low_memory=False)
 
-
-def main():
-    # Wide page layout
-    st.set_page_config(layout="wide")
-
-    # Title
-    st.title("Dynamic CSV Filter Dashboard")
-
-    # Load data (cached)
-    data = load_csv()
-
-    # Data Cleaning / Transformation
+    # Data cleaning
     if 'Date Time' in data.columns:
         data['Date Time'] = pd.to_datetime(
-            data['Date Time'],
-            format='%m/%d/%Y %H:%M:%S',
-            errors='coerce'
+            data['Date Time'], format='%m/%d/%Y %H:%M:%S', errors='coerce'
         )
         data['Year'] = data['Date Time'].dt.year
 
@@ -35,8 +22,7 @@ def main():
 
     if 'Subdivision' in data.columns:
         data['Subdivision'] = data['Subdivision'].str.replace(
-            r'^(Moose Jaw-|Saskatoon-)', '',
-            regex=True
+            r'^(Moose Jaw-|Saskatoon-)', '', regex=True
         )
 
     desired_order = [
@@ -49,42 +35,56 @@ def main():
     existing_columns = [col for col in desired_order if col in data.columns]
     other_columns = [col for col in data.columns if col not in existing_columns]
     column_order = existing_columns + other_columns
-    data = data[column_order]
 
-    # Data Preview
-    with st.expander("Data Preview", expanded=False):
-        st.write("### Data Preview:")
-        st.dataframe(data)
-        st.write(f"{data.shape[0]} rows × {data.shape[1]} columns")
+    return data[column_order]
 
-    # Filter Setup
-    with st.sidebar.expander("Data Filter", expanded=False):
+
+def filter_data(data: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    """Apply filters to the dataset."""
+    filtered_data = data.copy()
+    for column, selected_values in filters.items():
+        if selected_values:
+            filtered_data = filtered_data[filtered_data[column].isin(selected_values)]
+    return filtered_data
+
+
+def main():
+    # Page layout
+    st.set_page_config(layout="wide", page_title="CSV Filter Dashboard")
+
+    # Title
+    st.title("Dynamic CSV Filter Dashboard")
+
+    # Load data (cached and cleaned)
+    data = load_and_clean_data()
+
+    # Sidebar filter section
+    with st.sidebar.expander("Data Filter", expanded=True):
         exclude_filter_columns = [
             'ID', 'MP', 'MP Major', 'MP Minor', 'Date Time', 'Value',
             'PC', 'AC', 'TSC', 'Length', 'Latitude', 'Longitude', 'Heading'
         ]
 
-        filter_selections = {}
+        filters = {}
         for column in [c for c in data.columns if c not in exclude_filter_columns]:
             unique_values = data[column].dropna().unique()
             if len(unique_values) <= 200:
-                # Multi-select for fewer than or equal to 200 unique values
-                filter_selections[column] = st.multiselect(
-                    f"Filter by {column}",
-                    sorted(unique_values),
-                )
+                filters[column] = st.multiselect(f"Filter by {column}", sorted(unique_values))
             else:
-                # For large unique sets, you can handle sampling here as needed
-                st.warning(f"{column} has more than 200 unique values. No multi-select displayed.")
-                filter_selections[column] = []
+                st.warning(f"Column '{column}' has too many unique values for filtering.")
+                filters[column] = []
 
-    # Map Filters
-    with st.sidebar.expander("Map Filters", expanded=False):
+        # Apply Filter Button
+        apply_filters = st.button("Apply Filters")
+
+    # Map filter options
+    with st.sidebar.expander("Map Filters", expanded=True):
         map_view_mode = st.radio(
             "Select Map View",
-            ("Standard Marker View", "Heatmap View"),
+            ("Scatter Plot (Markers)", "Heatmap"),
             index=0
         )
+
         basemap_options = {
             "Street (OpenStreetMap)": "OpenStreetMap",
             "Light (CartoDB positron)": "CartoDB positron",
@@ -96,49 +96,48 @@ def main():
             index=0
         )
 
-    # Filter the data dynamically (no button; re-run on every change)
-    filtered_data = data.copy()
-    for column, selected_values in filter_selections.items():
-        if selected_values:
-            filtered_data = filtered_data[filtered_data[column].isin(selected_values)]
+    # Apply filters only on button click
+    if apply_filters:
+        filtered_data = filter_data(data, filters)
+        st.session_state['filtered_data'] = filtered_data
+    else:
+        filtered_data = st.session_state.get('filtered_data', data)
 
-    # Show Filtered Data
-    with st.expander("Filtered Data", expanded=False):
-        st.write("### Filtered Data:")
+    # Data Preview
+    with st.expander("Filtered Data Preview", expanded=True):
         st.dataframe(filtered_data)
         st.write(f"{filtered_data.shape[0]} rows × {filtered_data.shape[1]} columns")
 
-    # Map Visualization (expanded by default)
-    with st.expander("Interactive Map Visualization", expanded=True):
+    # Map Visualization
+    with st.expander("Map Visualization", expanded=True):
         if {'Latitude', 'Longitude'}.issubset(filtered_data.columns):
             map_data = filtered_data[['Latitude', 'Longitude']].dropna()
 
             if not map_data.empty:
-                # Optionally limit the number of rows for performance
-                if len(map_data) > 10000:
-                    st.warning("Too many points to display! Showing the top 10,000 rows.")
-                    map_data = map_data.head(10000)
+                # Limit rows dynamically for performance
+                if len(map_data) > 5000:
+                    st.warning("Too many points to display! Showing the top 5,000 rows.")
+                    map_data = map_data.head(5000)
 
                 avg_lat = map_data['Latitude'].mean()
                 avg_lon = map_data['Longitude'].mean()
                 tile_style = basemap_options[basemap_choice]
                 m = Map(location=[avg_lat, avg_lon], zoom_start=6, tiles=tile_style)
 
-                if map_view_mode == "Standard Marker View":
+                # Scatter Plot vs Heatmap
+                if map_view_mode == "Scatter Plot (Markers)":
                     marker_cluster = MarkerCluster(disableClusteringAtZoom=13).add_to(m)
                     for _, row in map_data.iterrows():
-                        Marker(
-                            location=[row['Latitude'], row['Longitude']]
-                        ).add_to(marker_cluster)
-                else:
-                    heat_data = map_data.values.tolist()
+                        Marker(location=[row['Latitude'], row['Longitude']]).add_to(marker_cluster)
+                else:  # Heatmap
+                    heat_data = map_data[['Latitude', 'Longitude']].values.tolist()
                     HeatMap(heat_data).add_to(m)
 
-                st_folium(m, width=700, height=600)
+                st_folium(m, width=700, height=500)
             else:
-                st.warning("No valid data points to display on the map.")
+                st.warning("No valid data points to display.")
         else:
-            st.warning("Data lacks 'Latitude'/'Longitude' columns.")
+            st.warning("Dataset lacks 'Latitude'/'Longitude' columns.")
 
 
 if __name__ == "__main__":
